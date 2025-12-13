@@ -1,0 +1,991 @@
+encienne
+Home.tsx
+import React, { useContext, useState, useEffect } from "react";
+import MapView, { Marker } from "react-native-maps";
+import { 
+  StyleSheet, 
+  View, 
+  Dimensions, 
+  ActivityIndicator, 
+  Text 
+} from "react-native";
+import { FontAwesome5 } from "@expo/vector-icons";
+import { Colors } from "../constants";
+import ConnectionModal from "../components/ConnectionModal";
+import { stationsArray as backupStations } from "../utilities/utilities";
+import RentModal from "../components/RentModal";
+import PaymentContext from "../contexts/PaymentContext";
+
+// Import API avec détection automatique
+import { getStations } from "../../src/services/api";
+
+interface Station {
+  title: string;
+  coordinate: { latitude: number; longitude: number };
+  availableBikes: [{ title: string; battery: string; price: string }];
+}
+
+export default function Home({ navigation }: any) {
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedStation, setSelectedStation] = useState<Station>({
+    title: "",
+    coordinate: { latitude: 0, longitude: 0 },
+    availableBikes: [{ title: "", battery: "", price: "" }],
+  });
+  const [stations, setStations] = useState<Station[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const paymentContext = useContext(PaymentContext);
+
+  useEffect(() => {
+    loadStations();
+  }, []);
+
+  const loadStations = async () => {
+    setLoading(true);
+    
+    try {
+      console.log("[Home] Chargement stations...");
+      const apiStations = await getStations();
+      
+      if (apiStations && apiStations.length > 0) {
+        setStations(apiStations);
+        console.log(`[Home] ${apiStations.length} stations chargées`);
+      } else {
+        console.log("[Home] API vide, données locales");
+        setStations(backupStations);
+      }
+    } catch (error) {
+      console.error("[Home] Erreur:", error);
+      setStations(backupStations);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <Text style={styles.loadingText}>Chargement des stations...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <MapView
+        initialRegion={{
+          latitude: 33.573110,
+          longitude: -7.589843,
+          latitudeDelta: 0.1,
+          longitudeDelta: 0.1,
+        }}
+        style={styles.map}
+        showsBuildings={false}
+        mapType="terrain"
+      >
+        {stations.map((station, index) => (
+          <Marker
+            key={index}
+            coordinate={station.coordinate}
+            title={station.title}
+            description={`${station.availableBikes.length} vélos disponibles`}
+            onPress={() => {
+              setSelectedStation(station);
+              setModalVisible(true);
+            }}
+          >
+            <View style={styles.marker}>
+              <FontAwesome5 name="bicycle" size={20} color={Colors.white} />
+              <Text style={styles.markerCount}>
+                {station.availableBikes.length}
+              </Text>
+            </View>
+          </Marker>
+        ))}
+      </MapView>
+      
+      <RentModal
+        navigation={navigation}
+        visible={modalVisible}
+        selectedStation={selectedStation}
+        onPress={() => setModalVisible(!modalVisible)}
+      />
+      
+      {paymentContext &&
+        paymentContext.paymentData &&
+        paymentContext.paymentData.paymentSuccess &&
+        !paymentContext.paymentData.connectionSuccess && (
+          <ConnectionModal
+            bikeTitle={paymentContext.paymentData.bikeTitle}
+            bikeBattery={paymentContext.paymentData.bikeBattery}
+            onConnectionOK={() =>
+              paymentContext.setPaymentData?.((prev: any) => ({
+                ...prev,
+                connectionSuccess: true,
+              }))
+            }
+          />
+        )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+  map: {
+    width: Dimensions.get("window").width,
+    flex: 1,
+  },
+  marker: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Colors.primary,
+    borderWidth: 3,
+    borderColor: Colors.white,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  markerCount: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: Colors.white,
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: Colors.primary,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  loadingContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 20,
+    fontSize: 18,
+    color: Colors.darkGray,
+    fontWeight: '600',
+  },
+});
+
+-----------------------------------------
+api.js
+import axios from "axios";
+
+// Depuis src/services vers app/utilities
+import { stationsArray as localStations } from "../../app/utilities/utilities";
+
+// Import de la détection automatique
+import { getApiUrl, resetDetection } from "./apiConfig";
+
+// Variable pour stocker l'URL détectée
+let API_URL = null;
+
+/**
+ * Obtient l'URL dynamique du backend
+ */
+const getDynamicApiUrl = async () => {
+  if (!API_URL) {
+    API_URL = await getApiUrl();
+    console.log(`[API] 🎯 URL détectée: ${API_URL}`);
+  }
+  return API_URL;
+};
+
+/**
+ * Crée une instance axios avec l'URL courante
+ */
+const createApiInstance = async () => {
+  const currentUrl = await getDynamicApiUrl();
+  return axios.create({
+    baseURL: currentUrl,
+    timeout: 15000,
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  });
+};
+
+/**
+ * Teste la connexion au backend
+ */
+export const testConnection = async () => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🔍 Test connexion: ${currentUrl}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl, 
+      timeout: 5000 
+    });
+    
+    const response = await api.get("/");
+    
+    return {
+      success: true,
+      message: "Backend connecté",
+      url: currentUrl,
+      data: response.data
+    };
+    
+  } catch (error) {
+    console.error("[API] ❌ Test échoué:", error.message);
+    return {
+      success: false,
+      error: error.message,
+      url: API_URL || 'Non détecté'
+    };
+  }
+};
+
+/**
+ * Charge les stations AVEC LEURS VÉLOS RÉELS depuis MySQL
+ * Format attendu par Home.tsx:
+ * {
+ *   title: "ST-WS100",
+ *   coordinate: { latitude: 33.5731, longitude: -7.5898 },
+ *   availableBikes: [{ title: "V100-01", battery: "100", price: "6.00" }]
+ * }
+ */
+export const getStations = async () => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 📡 Chargement depuis: ${currentUrl}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    // 1. Récupérer les stations
+    const stationsResponse = await api.get("/api/stations");
+    const mysqlStations = stationsResponse.data || [];
+    
+    console.log(`[API] 📊 ${mysqlStations.length} stations reçues`);
+    
+    if (mysqlStations.length === 0) {
+      console.log("[API] ⚠️ MySQL vide, données locales");
+      return localStations;
+    }
+    
+    console.log("[API] 🔍 Première station brute:", mysqlStations[0]);
+    
+    // 2. Pour chaque station, récupérer ses vélos RÉELS
+    const formattedStations = await Promise.all(
+      mysqlStations.map(async (station) => {
+        try {
+          // CORRECTION : "name" → "title"
+          const stationTitle = station.name || `Station ${station.id}`;
+          
+          // 3. Récupérer les vélos RÉELS de cette station
+          let realBikes = [];
+          try {
+            const bikesResponse = await api.get(`/api/bikes/${station.id}`);
+            realBikes = bikesResponse.data || [];
+            console.log(`[API] 🚲 Station ${station.id}: ${realBikes.length} vélos réels`);
+          } catch (bikeError) {
+            console.warn(`[API] ⚠️ Pas de vélos pour station ${station.id}:`, bikeError.message);
+            realBikes = [];
+          }
+          
+          // 4. Formater les vélos pour Home.tsx
+          const availableBikes = realBikes
+            .filter(bike => bike.available === true || bike.available === 1)
+            .map(bike => ({
+              title: bike.name || `Vélo ${bike.id}`, // "V100-01"
+              battery: bike.battery ? bike.battery.toString() : "100",
+              price: bike.price ? bike.price.toString() : "6.00"
+            }));
+          
+          // 5. Si pas de vélos réels, créer des vélos virtuels basés sur capacité
+          let finalBikes = availableBikes;
+          if (availableBikes.length === 0) {
+            console.log(`[API] ⚠️ Aucun vélo réel, création virtuelle pour ${stationTitle}`);
+            const bikeCount = Math.min(station.capacity || 3, 5);
+            for (let i = 1; i <= bikeCount; i++) {
+              finalBikes.push({
+                title: `V${station.id}-${i.toString().padStart(2, '0')}`,
+                battery: Math.floor(Math.random() * 50 + 50).toString(), // 50-100%
+                price: "6.00"
+              });
+            }
+          }
+          
+          // 6. Retourner la station formatée pour Home.tsx
+          return {
+            title: stationTitle,
+            coordinate: {
+              latitude: parseFloat(station.latitude) || 33.5731,
+              longitude: parseFloat(station.longitude) || -7.5898
+            },
+            availableBikes: finalBikes
+          };
+          
+        } catch (stationError) {
+          console.error(`[API] ❌ Erreur station ${station.id}:`, stationError.message);
+          
+          // Fallback pour cette station
+          return {
+            title: station.name || `Station ${station.id}`,
+            coordinate: {
+              latitude: 33.5731,
+              longitude: -7.5898
+            },
+            availableBikes: [{ title: "Vélo 1", battery: "100", price: "6.00" }]
+          };
+        }
+      })
+    );
+    
+    // 7. Filtrer les stations valides
+    const validStations = formattedStations.filter(station => 
+      station && station.title && station.coordinate
+    );
+    
+    console.log(`[API] ✅ ${validStations.length} stations formatées`);
+    console.log("[API] 📍 Exemple formaté:", validStations[0]);
+    
+    return validStations.length > 0 ? validStations : localStations;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur:", error.message);
+    console.log("[API] 🏠 Données locales");
+    return localStations;
+  }
+};
+
+/**
+ * Login utilisateur
+ */
+export const loginUser = async (email, password) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🔐 Login vers ${currentUrl}: ${email}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/login", {
+      email: email.toLowerCase().trim(),
+      password: password
+    });
+    
+    console.log(`[API] ✅ Login réponse:`, response.data.success ? "Succès" : "Échec");
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur login:", error.message);
+    
+    // Erreur réseau détaillée
+    if (error.code === 'ECONNREFUSED') {
+      console.error(`[API] ❌ Impossible de joindre le backend`);
+      console.error(`[API] 💡 Vérifie que le backend tourne`);
+    }
+    
+    return {
+      success: false,
+      message: error.response?.data?.message || `Erreur réseau: ${error.message}`
+    };
+  }
+};
+
+/**
+ * Inscription utilisateur
+ */
+export const registerUser = async (userData) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 📝 Register vers ${currentUrl}: ${userData.email}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/register", userData);
+    
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur register:", error.message);
+    return {
+      success: false,
+      message: error.response?.data?.message || "Erreur réseau"
+    };
+  }
+};
+
+/**
+ * Teste TOUTES les connexions (debug)
+ */
+export const debugConnections = async () => {
+  console.log("=".repeat(50));
+  console.log("[DEBUG] 🔍 Test des connexions...");
+  
+  try {
+    // Test 1: Backend principal
+    const backendTest = await testConnection();
+    console.log(`[DEBUG] Backend: ${backendTest.success ? '✅' : '❌'} ${backendTest.message}`);
+    
+    // Test 2: Stations
+    try {
+      const currentUrl = await getDynamicApiUrl();
+      const api = axios.create({ baseURL: currentUrl });
+      const stationsRes = await api.get("/api/stations");
+      console.log(`[DEBUG] Stations: ✅ ${stationsRes.data?.length || 0} stations`);
+    } catch (e) {
+      console.log(`[DEBUG] Stations: ❌ ${e.message}`);
+    }
+    
+    console.log("[DEBUG] ✅ Tests terminés");
+    console.log("=".repeat(50));
+    
+  } catch (error) {
+    console.error("[DEBUG] ❌ Erreur tests:", error.message);
+  }
+};
+
+/**
+ * Réinitialise la détection d'API
+ */
+export const resetApiDetection = () => {
+  API_URL = null;
+  resetDetection();
+  console.log("[API] 🔄 Détection réinitialisée");
+};
+
+export default {
+  getStations,
+  loginUser,
+  registerUser,
+  testConnection,
+  debugConnections,
+  resetApiDetection
+};
+
+
+------------------------------------------------
+server.js // server.js - API Wheelsun Backend COMPLÈTE
+const express = require("express");
+const mysql = require("mysql2");
+const cors = require("cors");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const os = require("os");
+require("dotenv").config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ==================== FONCTION POUR OBTENIR L'IP ====================
+function getNetworkIP() {
+  console.log("🔍 Recherche de l'adresse IP réseau...");
+  
+  const interfaces = os.networkInterfaces();
+  let wifiIP = null;
+  let ethernetIP = null;
+  let otherIP = null;
+
+  for (const interfaceName in interfaces) {
+    for (const iface of interfaces[interfaceName]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        console.log(`   📡 ${interfaceName}: ${iface.address}`);
+        
+        // Priorité: Wi-Fi
+        if (interfaceName.includes('Wi-Fi') || interfaceName.includes('WiFi') || interfaceName.includes('WLAN')) {
+          wifiIP = iface.address;
+        }
+        // Ensuite: Ethernet
+        else if (interfaceName.includes('Ethernet') && iface.address.startsWith('20.')) {
+          ethernetIP = iface.address;
+        }
+        // Autre IP
+        else if (!iface.address.startsWith('169.254')) { // Pas d'APIPA
+          otherIP = iface.address;
+        }
+      }
+    }
+  }
+
+  // Retourne par ordre de priorité
+  if (wifiIP) {
+    console.log(`✅ IP WiFi sélectionnée: ${wifiIP}`);
+    return wifiIP;
+  }
+  if (ethernetIP) {
+    console.log(`✅ IP Ethernet sélectionnée: ${ethernetIP}`);
+    return ethernetIP;
+  }
+  if (otherIP) {
+    console.log(`✅ Autre IP sélectionnée: ${otherIP}`);
+    return otherIP;
+  }
+
+  console.log("📍 Utilisation de localhost");
+  return 'localhost';
+}
+
+const SERVER_IP = getNetworkIP();
+
+// ==================== CONFIGURATION MYSQL ====================
+console.log("\n🔧 Configuration MySQL:");
+console.log("- Host:", process.env.DB_HOST || "localhost");
+console.log("- User:", process.env.DB_USER || "root");
+console.log("- Database:", process.env.DB_NAME || "wheelsun_db");
+console.log("- Port:", process.env.DB_PORT || 3306);
+
+const dbConfig = {
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME || "wheelsun_db",
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+};
+
+const db = mysql.createPool(dbConfig);
+
+// ==================== TEST CONNEXION MYSQL ====================
+let isDbConnected = false;
+
+db.getConnection((err, connection) => {
+  if (err) {
+    console.error("❌ ERREUR MYSQL:", err.message);
+    console.log("⚠️  Mode simulation activé");
+    isDbConnected = false;
+  } else {
+    console.log("✅ MySQL CONNECTÉ !");
+    
+    connection.query("SELECT DATABASE() as db", (err, result) => {
+      if (!err && result[0]) {
+        console.log("📊 Base de données:", result[0].db);
+      }
+    });
+    
+    connection.query("SHOW TABLES", (err, tables) => {
+      if (!err) {
+        const tableNames = tables.map(t => Object.values(t)[0]);
+        console.log("📋 Tables disponibles:", tableNames.join(", "));
+      }
+    });
+    
+    isDbConnected = true;
+    connection.release();
+  }
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || "wheelsun_secret_key";
+
+// ==================== ROUTES API ====================
+
+// 1. RACINE - TEST API
+app.get("/", (req, res) => {
+  res.json({
+    message: "🚀 API Wheelsun Backend",
+    status: "online",
+    version: "2.0.0",
+    server_ip: SERVER_IP,
+    database: isDbConnected ? "✅ MySQL connecté" : "⚠️ Mode simulation",
+    endpoints: {
+      auth: ["POST /api/register", "POST /api/login"],
+      stations: "GET /api/stations",
+      bikes: "GET /api/bikes/:stationId"
+    }
+  });
+});
+
+// 2. STATIONS
+app.get("/api/stations", (req, res) => {
+  console.log("🔍 /api/stations appelé");
+  
+  if (isDbConnected) {
+    db.query(
+      "SELECT id, name, latitude, longitude, address, capacity FROM stations",
+      (err, results) => {
+        if (err) {
+          console.error("❌ Erreur stations:", err);
+          return sendFallbackStations(res);
+        }
+        
+        console.log(`📍 ${results.length} stations depuis MySQL`);
+        res.json(results);
+      }
+    );
+  } else {
+    console.log("⚠️  Mode simulation stations");
+    sendFallbackStations(res);
+  }
+});
+
+// 3. VÉLOS PAR STATION
+app.get("/api/bikes/:stationId", (req, res) => {
+  const stationId = parseInt(req.params.stationId);
+  console.log(`🔍 /api/bikes/${stationId} appelé`);
+  
+  if (isDbConnected) {
+    db.query(
+      `SELECT b.id, b.name, b.battery_level as battery, b.price_per_hour as price, 
+              b.available, s.name as station_name
+       FROM bikes b
+       JOIN stations s ON b.station_id = s.id
+       WHERE b.station_id = ?`,
+      [stationId],
+      (err, results) => {
+        if (err) {
+          console.error(`❌ Erreur bikes:`, err.message);
+          return sendFallbackBikes(stationId, res);
+        }
+        
+        console.log(`🚲 ${results.length} vélos pour station ${stationId}`);
+        res.json(results);
+      }
+    );
+  } else {
+    sendFallbackBikes(stationId, res);
+  }
+});
+
+// 4. INSCRIPTION
+app.post("/api/register", async (req, res) => {
+  console.log("📝 Register reçu:", req.body);
+  
+  try {
+    const { email, password, name, phone } = req.body;
+
+    if (!email || !password || !name) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email, mot de passe et nom requis" 
+      });
+    }
+
+    if (!isDbConnected) {
+      const token = jwt.sign(
+        { userId: 999, email: email, name: name },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      
+      return res.json({
+        success: true,
+        message: "Mode simulation - Compte créé",
+        token,
+        user: { id: 999, email, name, phone: phone || null }
+      });
+    }
+
+    // Vérifier email
+    db.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email],
+      async (err, results) => {
+        if (err) {
+          console.error("❌ Erreur vérification email:", err);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Erreur base de données" 
+          });
+        }
+
+        if (results.length > 0) {
+          return res.status(409).json({ 
+            success: false, 
+            message: "Cet email est déjà utilisé" 
+          });
+        }
+
+        // Hasher mot de passe
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Créer utilisateur
+        db.query(
+          "INSERT INTO users (email, password, name, phone) VALUES (?, ?, ?, ?)",
+          [email, hashedPassword, name, phone || null],
+          (err, result) => {
+            if (err) {
+              console.error("❌ Erreur création:", err);
+              return res.status(500).json({ 
+                success: false, 
+                message: "Erreur création compte" 
+              });
+            }
+
+            // Générer token
+            const token = jwt.sign(
+              { userId: result.insertId, email: email, name: name },
+              JWT_SECRET,
+              { expiresIn: "7d" }
+            );
+
+            res.json({
+              success: true,
+              message: "Compte créé avec succès",
+              token,
+              user: {
+                id: result.insertId,
+                email,
+                name,
+                phone: phone || null
+              }
+            });
+          }
+        );
+      }
+    );
+  } catch (error) {
+    console.error("❌ Erreur inscription:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Erreur serveur" 
+    });
+  }
+});
+
+// 5. CONNEXION
+app.post("/api/login", async (req, res) => {
+  console.log("🔐 Login reçu:", req.body.email);
+  
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email et mot de passe requis" 
+      });
+    }
+
+    if (!isDbConnected) {
+      const token = jwt.sign(
+        { userId: 999, email: email, name: "Utilisateur Test" },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      
+      return res.json({
+        success: true,
+        message: "Mode simulation - Connecté",
+        token,
+        user: { id: 999, email, name: "Utilisateur Test" }
+      });
+    }
+
+    db.query(
+      "SELECT id, email, password, name, phone FROM users WHERE email = ?",
+      [email],
+      async (err, results) => {
+        if (err) {
+          console.error("❌ Erreur login:", err);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Erreur base de données" 
+          });
+        }
+
+        if (results.length === 0) {
+          return res.status(401).json({ 
+            success: false, 
+            message: "Email ou mot de passe incorrect" 
+          });
+        }
+
+        const user = results[0];
+        const validPassword = await bcrypt.compare(password, user.password);
+
+        if (!validPassword) {
+          return res.status(401).json({ 
+            success: false, 
+            message: "Email ou mot de passe incorrect" 
+          });
+        }
+
+        const token = jwt.sign(
+          { userId: user.id, email: user.email, name: user.name },
+          JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        res.json({
+          success: true,
+          message: "Connexion réussie",
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            phone: user.phone || null
+          }
+        });
+      }
+    );
+  } catch (error) {
+    console.error("❌ Erreur login:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Erreur serveur" 
+    });
+  }
+});
+
+// 6. PROFIL UTILISATEUR
+app.get("/api/profile", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Token manquant" });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: "Token invalide" });
+    }
+
+    const userId = user.userId;
+
+    if (!isDbConnected) {
+      return res.json({
+        id: userId,
+        email: user.email,
+        name: user.name || "Utilisateur",
+        phone: "+212 6 XX XX XX XX"
+      });
+    }
+
+    db.query(
+      "SELECT id, email, name, phone FROM users WHERE id = ?",
+      [userId],
+      (err, results) => {
+        if (err || results.length === 0) {
+          return res.status(404).json({ 
+            success: false, 
+            message: "Utilisateur non trouvé" 
+          });
+        }
+        res.json(results[0]);
+      }
+    );
+  });
+});
+
+// ==================== FONCTIONS FALLBACK ====================
+function sendFallbackStations(res) {
+  const stations = [
+    {
+      id: 1,
+      name: "ST-WS100",
+      latitude: 33.5731,
+      longitude: -7.5898,
+      address: "Centre-ville Casablanca",
+      capacity: 20
+    },
+    {
+      id: 2,
+      name: "ST-WS200",
+      latitude: 33.5790,
+      longitude: -7.5990,
+      address: "Quartier des affaires",
+      capacity: 15
+    },
+    {
+      id: 3,
+      name: "ST-WS300",
+      latitude: 33.5670,
+      longitude: -7.5800,
+      address: "Port de Casablanca",
+      capacity: 25
+    },
+    {
+      id: 4,
+      name: "ST-WS400",
+      latitude: 33.5830,
+      longitude: -7.5750,
+      address: "Nord Casablanca",
+      capacity: 18
+    },
+    {
+      id: 5,
+      name: "ST-WS500",
+      latitude: 33.581571,
+      longitude: -7.602317,
+      address: "Nouvelle zone Casablanca",
+      capacity: 12
+    },
+    {
+      id: 6,
+      name: "ST-WS600",
+      latitude: 33.601790,
+      longitude: -7.584101,
+      address: "Quartier résidentiel Nord",
+      capacity: 10
+    }
+  ];
+  
+  res.json(stations);
+}
+
+function sendFallbackBikes(stationId, res) {
+  const bikesDatabase = {
+    1: [
+      { id: 101, name: "V100-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS100" },
+      { id: 102, name: "V100-02", battery: 90, price: 6.00, available: true, station_name: "ST-WS100" },
+      { id: 103, name: "V100-03", battery: 80, price: 6.00, available: true, station_name: "ST-WS100" }
+    ],
+    2: [
+      { id: 201, name: "V200-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS200" },
+      { id: 202, name: "V200-02", battery: 50, price: 6.00, available: true, station_name: "ST-WS200" }
+    ],
+    3: [
+      { id: 301, name: "V300-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS300" },
+      { id: 302, name: "V300-02", battery: 60, price: 6.00, available: true, station_name: "ST-WS300" }
+    ]
+  };
+  
+  res.json(bikesDatabase[stationId] || []);
+}
+
+// ==================== DÉMARRAGE SERVEUR ====================
+const PORT = process.env.PORT || 5000;
+
+// Démarrer le serveur
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 Serveur backend démarré`);
+  console.log(`📍 Local: http://localhost:${PORT}`);
+  console.log(`🌐 Réseau: http://${SERVER_IP}:${PORT}`);
+  console.log(`📱 Pour Expo Go: http://${SERVER_IP}:${PORT}`);
+  console.log(`📊 MySQL: ${isDbConnected ? '✅ Connecté' : '❌ Non connecté'}`);
+  
+  console.log(`\n📡 Endpoints disponibles:`);
+  console.log(`   http://${SERVER_IP}:${PORT}/`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/register`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/login`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/stations`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/bikes/1`);
+});
+
+// Gestion des erreurs
+process.on('SIGINT', () => {
+  console.log('\n\n👋 Arrêt du serveur...');
+  process.exit(0);
+});

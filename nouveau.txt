@@ -1,0 +1,2377 @@
+nouveau
+Home.tsx
+import React, { useContext, useState, useEffect } from "react";
+import MapView, { Marker, Callout } from "react-native-maps";
+import { 
+  StyleSheet, 
+  View, 
+  Dimensions, 
+  ActivityIndicator, 
+  Text,
+  TouchableOpacity,
+  Alert,
+  Modal,
+  ScrollView
+} from "react-native";
+import { 
+  FontAwesome5, 
+  MaterialIcons, 
+  Ionicons,
+  FontAwesome 
+} from "@expo/vector-icons";
+import { Colors } from "../constants";
+import ConnectionModal from "../components/ConnectionModal";
+import { stationsArray as backupStations } from "../utilities/utilities";
+import RentModal from "../components/RentModal";
+import PaymentContext from "../contexts/PaymentContext";
+import GlobalContext from "../contexts/GlobalContext";
+
+// Import API avec gestion des locations
+import { getStations, getMyRentals, rentBike, endRental, resetApiDetection } from "../../src/services/api";
+
+interface Station {
+  id: number;
+  title: string;
+  coordinate: { latitude: number; longitude: number };
+  availableBikes: Array<{
+    id: number;
+    title: string;
+    battery: string;
+    price: string;
+  }>;
+}
+
+interface RentedBike {
+  rental_id: number;
+  bike_id: number;
+  bike_name: string;
+  battery: number;
+  station_name: string;
+  latitude: number;
+  longitude: number;
+  start_time: string;
+  hours: number;
+  total_price: number;
+}
+
+interface Bike {
+  id: number;
+  title: string;
+  battery: string;
+  price: string;
+}
+
+export default function Home({ navigation }: any) {
+  const [modalVisible, setModalVisible] = useState(false);
+  const [rentalModalVisible, setRentalModalVisible] = useState(false);
+  const [selectedStation, setSelectedStation] = useState<Station>({
+    id: 0,
+    title: "",
+    coordinate: { latitude: 0, longitude: 0 },
+    availableBikes: []
+  });
+  const [selectedBike, setSelectedBike] = useState<Bike | null>(null);
+  const [stations, setStations] = useState<Station[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [myRentedBike, setMyRentedBike] = useState<RentedBike | null>(null);
+  const [hours, setHours] = useState(1);
+
+  const paymentContext = useContext(PaymentContext);
+  const globalContext = useContext(GlobalContext);
+  const currentUser = globalContext?.user;
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    
+    try {
+      // 1. Charger les stations avec vélos DISPONIBLES
+      console.log("[Home] Chargement stations...");
+      const apiStations = await getStations();
+      
+      if (apiStations && apiStations.length > 0) {
+        setStations(apiStations);
+        console.log(`[Home] ${apiStations.length} stations chargées`);
+      } else {
+        console.log("[Home] API vide, données locales");
+        setStations(backupStations);
+      }
+
+      // 2. Vérifier si l'utilisateur a un vélo loué
+      if (currentUser?.id) {
+        const rentedBikes = await getMyRentals(currentUser.id);
+        if (rentedBikes.length > 0) {
+          setMyRentedBike(rentedBikes[0]);
+          console.log(`[Home] 🚲 Vélo loué: ${rentedBikes[0].bike_name}`);
+        } else {
+          setMyRentedBike(null);
+          console.log(`[Home] 📭 Aucun vélo loué pour user ${currentUser.id}`);
+        }
+      } else {
+        console.log("[Home] 👤 Utilisateur non connecté");
+      }
+      
+    } catch (error) {
+      console.error("[Home] Erreur:", error);
+      setStations(backupStations);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Sélectionner une station
+  const handleSelectStation = (station: Station) => {
+    if (myRentedBike) {
+      Alert.alert(
+        "Location active",
+        "Vous avez déjà un vélo loué. Rendez-le d'abord pour en louer un autre.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+    
+    setSelectedStation(station);
+    setModalVisible(true);
+  };
+
+  // Sélectionner un vélo pour location
+  const handleSelectBike = (bike: Bike) => {
+    setSelectedBike(bike);
+    setRentalModalVisible(true);
+  };
+
+  // Louer un vélo
+  const handleRentBike = async () => {
+    if (!currentUser?.id || !selectedBike || !selectedStation.id) {
+      Alert.alert("Erreur", "Données manquantes pour la location");
+      return;
+    }
+
+    if (hours < 1 || hours > 24) {
+      Alert.alert("Erreur", "Nombre d'heures invalide (1-24h)");
+      return;
+    }
+
+    Alert.alert(
+      "Confirmer la location",
+      `Louer le vélo ${selectedBike.title} pour ${hours} heure(s) ?\nPrix: ${hours * 6}€`,
+      [
+        { text: "Annuler", style: "cancel" },
+        { 
+          text: "Confirmer", 
+          onPress: async () => {
+            try {
+              const result = await rentBike(
+                currentUser.id,
+                selectedBike.id,
+                selectedStation.id,
+                hours
+              );
+              
+              if (result.success) {
+                Alert.alert(
+                  "✅ Location confirmée",
+                  `Vélo ${selectedBike.title} loué pour ${hours} heure(s)\nPrix: ${result.rental?.total_price || hours * 6}€`,
+                  [{ 
+                    text: "OK", 
+                    onPress: () => {
+                      // Fermer les modals et recharger
+                      setModalVisible(false);
+                      setRentalModalVisible(false);
+                      setSelectedBike(null);
+                      setHours(1);
+                      loadData();
+                    }
+                  }]
+                );
+              } else {
+                Alert.alert("❌ Erreur", result.message || "Échec de la location");
+              }
+            } catch (error) {
+              Alert.alert("❌ Erreur", "Impossible de louer le vélo");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Rendre un vélo
+  const handleReturnBike = async () => {
+    if (!myRentedBike) return;
+    
+    Alert.alert(
+      "Rendre le vélo",
+      `Voulez-vous rendre le vélo ${myRentedBike.bike_name} ?`,
+      [
+        { text: "Annuler", style: "cancel" },
+        { 
+          text: "Confirmer", 
+          onPress: async () => {
+            try {
+              const result = await endRental(myRentedBike.rental_id, currentUser?.id);
+              
+              if (result.success) {
+                Alert.alert(
+                  "✅ Succès",
+                  "Vélo rendu avec succès",
+                  [{ text: "OK", onPress: () => loadData() }]
+                );
+                setMyRentedBike(null);
+              } else {
+                Alert.alert("❌ Erreur", result.message || "Échec du retour");
+              }
+            } catch (error) {
+              Alert.alert("❌ Erreur", "Impossible de rendre le vélo");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Calculer le temps restant
+  const calculateRemainingTime = (startTime: string, hours: number): string => {
+    const start = new Date(startTime);
+    const end = new Date(start.getTime() + hours * 60 * 60 * 1000);
+    const now = new Date();
+    
+    if (now > end) {
+      return "Temps écoulé";
+    }
+    
+    const diffMs = end.getTime() - now.getTime();
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return `${diffHours}h ${diffMinutes}m restantes`;
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <Text style={styles.loadingText}>Chargement des stations...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      {/* Bannière vélo loué */}
+      {myRentedBike && (
+        <View style={styles.rentedBikeBanner}>
+          <View style={styles.rentedBikeInfo}>
+            <FontAwesome5 name="bicycle" size={20} color={Colors.white} />
+            <View style={styles.rentedBikeText}>
+              <Text style={styles.rentedBikeTitle}>🚲 Vélo en cours d'utilisation</Text>
+              <Text style={styles.rentedBikeDetails}>
+                {myRentedBike.bike_name} • {myRentedBike.battery}% batterie
+              </Text>
+              <Text style={styles.rentedBikeTime}>
+                ⏱️ {calculateRemainingTime(myRentedBike.start_time, myRentedBike.hours)}
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity onPress={handleReturnBike} style={styles.returnButton}>
+            <MaterialIcons name="done" size={20} color={Colors.white} />
+            <Text style={styles.returnButtonText}>Rendre</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <MapView
+        initialRegion={{
+          latitude: 33.573110,
+          longitude: -7.589843,
+          latitudeDelta: 0.15,
+          longitudeDelta: 0.15,
+        }}
+        style={styles.map}
+        showsBuildings={false}
+        mapType="terrain"
+      >
+        {/* Stations avec vélos disponibles */}
+        {stations.map((station) => (
+          <Marker
+            key={`station-${station.id}`}
+            coordinate={station.coordinate}
+            title={station.title}
+            description={`${station.availableBikes.length} vélos disponibles`}
+            onPress={() => handleSelectStation(station)}
+          >
+            <View style={[
+              styles.marker,
+              station.availableBikes.length > 0 
+                ? (myRentedBike ? styles.markerDisabled : styles.markerAvailable) 
+                : styles.markerEmpty
+            ]}>
+              <FontAwesome5 
+                name="bicycle" 
+                size={20} 
+                color={Colors.white} 
+              />
+              <Text style={styles.markerCount}>
+                {station.availableBikes.length}
+              </Text>
+            </View>
+            <Callout onPress={() => handleSelectStation(station)}>
+              <View style={styles.stationCallout}>
+                <Text style={styles.stationCalloutTitle}>{station.title}</Text>
+                <Text style={styles.stationCalloutBikes}>
+                  {station.availableBikes.length} vélos disponibles
+                </Text>
+                {myRentedBike ? (
+                  <Text style={styles.stationCalloutWarning}>
+                    ⚠️ Vous avez déjà un vélo
+                  </Text>
+                ) : station.availableBikes.length > 0 ? (
+                  <TouchableOpacity 
+                    style={styles.stationCalloutButton}
+                    onPress={() => handleSelectStation(station)}
+                  >
+                    <Text style={styles.stationCalloutButtonText}>Voir les vélos</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.stationCalloutEmpty}>Aucun vélo disponible</Text>
+                )}
+              </View>
+            </Callout>
+          </Marker>
+        ))}
+
+        {/* Marqueur spécial pour le vélo loué */}
+        {myRentedBike && (
+          <Marker
+            coordinate={{
+              latitude: myRentedBike.latitude,
+              longitude: myRentedBike.longitude
+            }}
+            title={`Mon vélo: ${myRentedBike.bike_name}`}
+            description={`Batterie: ${myRentedBike.battery}%`}
+          >
+            <View style={styles.myBikeMarker}>
+              <MaterialIcons name="directions-bike" size={24} color={Colors.white} />
+            </View>
+            <Callout>
+              <View style={styles.myBikeCallout}>
+                <View style={styles.myBikeCalloutHeader}>
+                  <MaterialIcons name="pedal-bike" size={24} color={Colors.primary} />
+                  <Text style={styles.myBikeCalloutTitle}>Mon vélo</Text>
+                </View>
+                <Text style={styles.myBikeName}>{myRentedBike.bike_name}</Text>
+                <View style={styles.myBikeInfo}>
+                  <View style={styles.myBikeInfoItem}>
+                    <Ionicons name="battery-charging" size={16} color="#4CAF50" />
+                    <Text style={styles.myBikeInfoText}>{myRentedBike.battery}%</Text>
+                  </View>
+                  <View style={styles.myBikeInfoItem}>
+                    <FontAwesome name="clock-o" size={16} color={Colors.darkGray} />
+                    <Text style={styles.myBikeInfoText}>
+                      {calculateRemainingTime(myRentedBike.start_time, myRentedBike.hours)}
+                    </Text>
+                  </View>
+                  <View style={styles.myBikeInfoItem}>
+                    <FontAwesome5 name="money-bill-wave" size={14} color={Colors.darkGray} />
+                    <Text style={styles.myBikeInfoText}>{myRentedBike.total_price}€</Text>
+                  </View>
+                </View>
+                <TouchableOpacity 
+                  style={styles.endRentalButton}
+                  onPress={handleReturnBike}
+                >
+                  <Text style={styles.endRentalButtonText}>Rendre le vélo</Text>
+                  <MaterialIcons name="arrow-forward" size={16} color={Colors.white} />
+                </TouchableOpacity>
+              </View>
+            </Callout>
+          </Marker>
+        )}
+      </MapView>
+
+      {/* Modal de sélection des vélos d'une station */}
+      <Modal
+        visible={modalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {selectedStation.title} - Vélos disponibles
+              </Text>
+              <TouchableOpacity 
+                style={styles.modalCloseButton}
+                onPress={() => setModalVisible(false)}
+              >
+                <MaterialIcons name="close" size={24} color={Colors.darkGray} />
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.modalScroll}>
+              {selectedStation.availableBikes.length === 0 ? (
+                <View style={styles.emptyBikesContainer}>
+                  <MaterialIcons name="error-outline" size={48} color={Colors.gray} />
+                  <Text style={styles.emptyBikesText}>Aucun vélo disponible</Text>
+                  <Text style={styles.emptyBikesSubtext}>
+                    Tous les vélos sont actuellement loués
+                  </Text>
+                </View>
+              ) : (
+                selectedStation.availableBikes.map((bike) => (
+                  <TouchableOpacity 
+                    key={bike.id}
+                    style={styles.bikeItem}
+                    onPress={() => handleSelectBike(bike)}
+                    disabled={!!myRentedBike}
+                  >
+                    <View style={styles.bikeItemLeft}>
+                      <View style={styles.bikeIconContainer}>
+                        <FontAwesome5 name="bicycle" size={20} color={Colors.primary} />
+                      </View>
+                      <View style={styles.bikeInfo}>
+                        <Text style={styles.bikeName}>{bike.title}</Text>
+                        <View style={styles.bikeDetails}>
+                          <View style={styles.bikeDetail}>
+                            <Ionicons name="battery-charging" size={14} color="#4CAF50" />
+                            <Text style={styles.bikeDetailText}>{bike.battery}%</Text>
+                          </View>
+                          <View style={styles.bikeDetail}>
+                            <FontAwesome5 name="money-bill-wave" size={12} color={Colors.darkGray} />
+                            <Text style={styles.bikeDetailText}>{bike.price}€/h</Text>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                    {myRentedBike ? (
+                      <View style={styles.bikeRentedBadge}>
+                        <Text style={styles.bikeRentedText}>Déjà loué</Text>
+                      </View>
+                    ) : (
+                      <MaterialIcons name="chevron-right" size={24} color={Colors.gray} />
+                    )}
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de confirmation de location */}
+      <Modal
+        visible={rentalModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setRentalModalVisible(false)}
+      >
+        <View style={styles.rentalModalOverlay}>
+          <View style={styles.rentalModalContainer}>
+            <View style={styles.rentalModalHeader}>
+              <Text style={styles.rentalModalTitle}>📍 {selectedStation.title}</Text>
+              <Text style={styles.rentalModalSubtitle}>Confirmer la location</Text>
+            </View>
+            
+            <View style={styles.rentalModalContent}>
+              <View style={styles.selectedBikeInfo}>
+                <View style={styles.selectedBikeIcon}>
+                  <FontAwesome5 name="bicycle" size={30} color={Colors.primary} />
+                </View>
+                <View style={styles.selectedBikeDetails}>
+                  <Text style={styles.selectedBikeName}>{selectedBike?.title}</Text>
+                  <View style={styles.selectedBikeStats}>
+                    <View style={styles.selectedBikeStat}>
+                      <Ionicons name="battery-charging" size={16} color="#4CAF50" />
+                      <Text style={styles.selectedBikeStatText}>{selectedBike?.battery}%</Text>
+                    </View>
+                    <View style={styles.selectedBikeStat}>
+                      <FontAwesome5 name="money-bill-wave" size={14} color={Colors.darkGray} />
+                      <Text style={styles.selectedBikeStatText}>{selectedBike?.price}€/h</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+              
+              <View style={styles.hoursSelector}>
+                <Text style={styles.hoursLabel}>Durée de location:</Text>
+                <View style={styles.hoursButtons}>
+                  {[1, 2, 3, 4, 6, 8].map((h) => (
+                    <TouchableOpacity
+                      key={h}
+                      style={[
+                        styles.hourButton,
+                        hours === h && styles.hourButtonSelected
+                      ]}
+                      onPress={() => setHours(h)}
+                    >
+                      <Text style={[
+                        styles.hourButtonText,
+                        hours === h && styles.hourButtonTextSelected
+                      ]}>
+                        {h}h
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              
+              <View style={styles.priceSummary}>
+                <View style={styles.priceRow}>
+                  <Text style={styles.priceLabel}>Prix unitaire:</Text>
+                  <Text style={styles.priceValue}>{selectedBike?.price}€/h</Text>
+                </View>
+                <View style={styles.priceRow}>
+                  <Text style={styles.priceLabel}>Durée:</Text>
+                  <Text style={styles.priceValue}>{hours} heure(s)</Text>
+                </View>
+                <View style={styles.totalPriceRow}>
+                  <Text style={styles.totalPriceLabel}>Total:</Text>
+                  <Text style={styles.totalPriceValue}>
+                    {(parseFloat(selectedBike?.price || "6") * hours).toFixed(2)}€
+                  </Text>
+                </View>
+              </View>
+            </View>
+            
+            <View style={styles.rentalModalFooter}>
+              <TouchableOpacity 
+                style={styles.cancelButton}
+                onPress={() => setRentalModalVisible(false)}
+              >
+                <Text style={styles.cancelButtonText}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.confirmButton}
+                onPress={handleRentBike}
+              >
+                <Text style={styles.confirmButtonText}>Louer maintenant</Text>
+                <FontAwesome5 name="arrow-right" size={16} color={Colors.white} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Bouton rafraîchir */}
+      <TouchableOpacity style={styles.refreshButton} onPress={loadData}>
+        <FontAwesome5 name="sync" size={18} color={Colors.white} />
+      </TouchableOpacity>
+
+      {/* Indicateur de statut */}
+      <View style={styles.statusIndicator}>
+        <Text style={styles.statusText}>
+          {myRentedBike 
+            ? `🚲 Vélo ${myRentedBike.bike_name} loué` 
+            : `📍 ${stations.length} stations disponibles`
+          }
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+  map: {
+    width: Dimensions.get("window").width,
+    flex: 1,
+  },
+  
+  // Bannière vélo loué
+  rentedBikeBanner: {
+    position: 'absolute',
+    top: 50,
+    left: 20,
+    right: 20,
+    backgroundColor: Colors.primary,
+    borderRadius: 12,
+    padding: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  rentedBikeInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  rentedBikeText: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  rentedBikeTitle: {
+    color: Colors.white,
+    fontWeight: '700',
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  rentedBikeDetails: {
+    color: Colors.white,
+    opacity: 0.9,
+    fontSize: 14,
+    marginBottom: 2,
+  },
+  rentedBikeTime: {
+    color: Colors.white,
+    opacity: 0.8,
+    fontSize: 12,
+  },
+  returnButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  returnButtonText: {
+    color: Colors.white,
+    fontWeight: '600',
+    fontSize: 14,
+    marginLeft: 6,
+  },
+  
+  // Marqueurs
+  marker: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 3,
+    borderColor: Colors.white,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  markerAvailable: {
+    backgroundColor: Colors.primary,
+  },
+  markerDisabled: {
+    backgroundColor: Colors.gray,
+    opacity: 0.7,
+  },
+  markerEmpty: {
+    backgroundColor: Colors.darkGray,
+    opacity: 0.5,
+  },
+  markerCount: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: Colors.white,
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: Colors.primary,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  
+  // Callout station
+  stationCallout: {
+    width: 200,
+    padding: 12,
+  },
+  stationCalloutTitle: {
+    fontWeight: '700',
+    fontSize: 16,
+    color: Colors.darkGray,
+    marginBottom: 4,
+  },
+  stationCalloutBikes: {
+    fontSize: 14,
+    color: Colors.gray,
+    marginBottom: 8,
+  },
+  stationCalloutWarning: {
+    fontSize: 12,
+    color: '#FF9800',
+    fontStyle: 'italic',
+  },
+  stationCalloutButton: {
+    backgroundColor: Colors.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  stationCalloutButtonText: {
+    color: Colors.white,
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  stationCalloutEmpty: {
+    fontSize: 12,
+    color: Colors.gray,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  
+  // Marqueur vélo personnel
+  myBikeMarker: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#4CAF50',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: Colors.white,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 6,
+  },
+  myBikeCallout: {
+    width: 220,
+    padding: 12,
+  },
+  myBikeCalloutHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  myBikeCalloutTitle: {
+    fontWeight: '700',
+    fontSize: 18,
+    color: Colors.darkGray,
+    marginLeft: 8,
+  },
+  myBikeName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.primary,
+    marginBottom: 8,
+  },
+  myBikeInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  myBikeInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  myBikeInfoText: {
+    fontSize: 12,
+    color: Colors.darkGray,
+    marginLeft: 4,
+  },
+  endRentalButton: {
+    backgroundColor: Colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  endRentalButtonText: {
+    color: Colors.white,
+    fontWeight: '600',
+    fontSize: 14,
+    marginRight: 6,
+  },
+  
+  // Modal de sélection des vélos
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    backgroundColor: Colors.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    minHeight: '40%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.lightGray,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.darkGray,
+    flex: 1,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalScroll: {
+    padding: 20,
+  },
+  emptyBikesContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  emptyBikesText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: Colors.darkGray,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyBikesSubtext: {
+    fontSize: 14,
+    color: Colors.gray,
+    textAlign: 'center',
+  },
+  bikeItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.lightGray,
+  },
+  bikeItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  bikeIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.lightPrimary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 15,
+  },
+  bikeInfo: {
+    flex: 1,
+  },
+  bikeName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.darkGray,
+    marginBottom: 4,
+  },
+  bikeDetails: {
+    flexDirection: 'row',
+  },
+  bikeDetail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  bikeDetailText: {
+    fontSize: 12,
+    color: Colors.gray,
+    marginLeft: 4,
+  },
+  bikeRentedBadge: {
+    backgroundColor: Colors.lightGray,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  bikeRentedText: {
+    fontSize: 11,
+    color: Colors.gray,
+    fontStyle: 'italic',
+  },
+  
+  // Modal de confirmation de location
+  rentalModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  rentalModalContainer: {
+    backgroundColor: Colors.white,
+    borderRadius: 20,
+    width: '100%',
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  rentalModalHeader: {
+    padding: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.lightGray,
+  },
+  rentalModalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: Colors.darkGray,
+    marginBottom: 4,
+  },
+  rentalModalSubtitle: {
+    fontSize: 16,
+    color: Colors.gray,
+  },
+  rentalModalContent: {
+    padding: 24,
+  },
+  selectedBikeInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+    backgroundColor: Colors.lightGray,
+    padding: 16,
+    borderRadius: 12,
+  },
+  selectedBikeIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: Colors.lightPrimary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  selectedBikeDetails: {
+    flex: 1,
+  },
+  selectedBikeName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.darkGray,
+    marginBottom: 8,
+  },
+  selectedBikeStats: {
+    flexDirection: 'row',
+  },
+  selectedBikeStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 20,
+  },
+  selectedBikeStatText: {
+    fontSize: 14,
+    color: Colors.darkGray,
+    marginLeft: 6,
+  },
+  hoursSelector: {
+    marginBottom: 24,
+  },
+  hoursLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.darkGray,
+    marginBottom: 12,
+  },
+  hoursButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -4,
+  },
+  hourButton: {
+    backgroundColor: Colors.lightGray,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    margin: 4,
+    minWidth: 50,
+    alignItems: 'center',
+  },
+  hourButtonSelected: {
+    backgroundColor: Colors.primary,
+  },
+  hourButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.darkGray,
+  },
+  hourButtonTextSelected: {
+    color: Colors.white,
+  },
+  priceSummary: {
+    backgroundColor: Colors.lightGray,
+    padding: 16,
+    borderRadius: 12,
+  },
+  priceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  priceLabel: {
+    fontSize: 14,
+    color: Colors.gray,
+  },
+  priceValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.darkGray,
+  },
+  totalPriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.gray,
+  },
+  totalPriceLabel: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: Colors.darkGray,
+  },
+  totalPriceValue: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
+  rentalModalFooter: {
+    flexDirection: 'row',
+    padding: 24,
+    borderTopWidth: 1,
+    borderTopColor: Colors.lightGray,
+  },
+  cancelButton: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginRight: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.gray,
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.darkGray,
+  },
+  confirmButton: {
+    flex: 2,
+    backgroundColor: Colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  confirmButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.white,
+    marginRight: 8,
+  },
+  
+  // Bouton rafraîchir
+  refreshButton: {
+    position: 'absolute',
+    bottom: 100,
+    right: 20,
+    backgroundColor: Colors.primary,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  
+  // Indicateur de statut
+  statusIndicator: {
+    position: 'absolute',
+    bottom: 30,
+    left: 20,
+    right: 20,
+    backgroundColor: Colors.white,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statusText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.darkGray,
+    flex: 1,
+  },
+  
+  // Loading
+  loadingContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 20,
+    fontSize: 18,
+    color: Colors.darkGray,
+    fontWeight: '600',
+  },
+});   
+
+---------------------------------
+
+api.js // WheelsunNew/src/services/api.js
+import axios from "axios";
+
+// Import de la détection automatique
+import { getApiUrl, resetDetection } from "./apiConfig";
+
+// Import données locales
+import { stationsArray as localStations } from "../../app/utilities/utilities";
+
+// Variable pour stocker l'URL détectée
+let API_URL = null;
+
+/**
+ * Obtient l'URL dynamique du backend
+ */
+const getDynamicApiUrl = async () => {
+  if (!API_URL) {
+    API_URL = await getApiUrl();
+    console.log(`[API] 🎯 URL détectée: ${API_URL}`);
+  }
+  return API_URL;
+};
+
+/**
+ * Teste la connexion au backend
+ */
+export const testConnection = async () => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🔍 Test connexion: ${currentUrl}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl, 
+      timeout: 5000 
+    });
+    
+    const response = await api.get("/");
+    
+    return {
+      success: true,
+      message: "Backend connecté",
+      url: currentUrl,
+      data: response.data
+    };
+    
+  } catch (error) {
+    console.error("[API] ❌ Test échoué:", error.message);
+    return {
+      success: false,
+      error: error.message,
+      url: API_URL || 'Non détecté'
+    };
+  }
+};
+
+/**
+ * Charge les stations AVEC LEURS VÉLOS DISPONIBLES (exclut les loués)
+ */
+export const getStations = async () => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 📡 Chargement depuis: ${currentUrl}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    // 1. Récupérer les stations
+    const stationsResponse = await api.get("/api/stations");
+    const mysqlStations = stationsResponse.data || [];
+    
+    console.log(`[API] 📊 ${mysqlStations.length} stations reçues`);
+    
+    if (mysqlStations.length === 0) {
+      console.log("[API] ⚠️ MySQL vide, données locales");
+      return localStations;
+    }
+    
+    console.log("[API] 🔍 Première station brute:", mysqlStations[0]);
+    
+    // 2. Pour chaque station, récupérer ses vélos DISPONIBLES
+    const formattedStations = await Promise.all(
+      mysqlStations.map(async (station) => {
+        try {
+          // Récupérer les vélos DISPONIBLES (exclut les loués)
+          let availableBikes = [];
+          try {
+            const bikesResponse = await api.get(`/api/bikes/${station.id}`);
+            availableBikes = bikesResponse.data || [];
+            console.log(`[API] 🚲 Station ${station.id}: ${availableBikes.length} vélos disponibles`);
+          } catch (bikeError) {
+            console.warn(`[API] ⚠️ Pas de vélos pour station ${station.id}:`, bikeError.message);
+            availableBikes = [];
+          }
+          
+          // Formater les vélos pour Home.tsx
+          const formattedBikes = availableBikes.map(bike => ({
+            id: bike.id,
+            title: bike.name || `Vélo ${bike.id}`,
+            battery: bike.battery ? bike.battery.toString() : "100",
+            price: bike.price ? bike.price.toString() : "6.00"
+          }));
+          
+          // Si pas de vélos disponibles, indiquer que la station est vide
+          let finalBikes = formattedBikes;
+          if (formattedBikes.length === 0) {
+            console.log(`[API] ⚠️ Aucun vélo disponible à la station ${station.name}`);
+          }
+          
+          // Retourner la station formatée
+          return {
+            id: station.id,
+            title: station.name || `Station ${station.id}`,
+            coordinate: {
+              latitude: parseFloat(station.latitude) || 33.5731,
+              longitude: parseFloat(station.longitude) || -7.5898
+            },
+            availableBikes: finalBikes
+          };
+          
+        } catch (stationError) {
+          console.error(`[API] ❌ Erreur station ${station.id}:`, stationError.message);
+          
+          // Fallback pour cette station
+          return {
+            id: station.id,
+            title: station.name || `Station ${station.id}`,
+            coordinate: {
+              latitude: 33.5731,
+              longitude: -7.5898
+            },
+            availableBikes: []
+          };
+        }
+      })
+    );
+    
+    // 3. Filtrer les stations valides
+    const validStations = formattedStations.filter(station => 
+      station && station.title && station.coordinate
+    );
+    
+    console.log(`[API] ✅ ${validStations.length} stations formatées`);
+    
+    return validStations.length > 0 ? validStations : localStations;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur:", error.message);
+    console.log("[API] 🏠 Données locales");
+    return localStations;
+  }
+};
+
+/**
+ * Récupère les locations actives d'un utilisateur
+ */
+export const getMyRentals = async (userId) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 📱 Locations actives pour user ${userId}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.get(`/api/my-rentals/${userId}`);
+    return response.data || [];
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur locations actives:", error.message);
+    return [];
+  }
+};
+
+/**
+ * Louer un vélo
+ */
+export const rentBike = async (userId, bikeId, stationId, hours) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🚲 Location: user ${userId}, bike ${bikeId}, ${hours}h`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/rent", {
+      userId,
+      bikeId,
+      stationId,
+      hours
+    });
+    
+    console.log(`[API] ✅ Location: ${response.data.success ? 'Succès' : 'Échec'}`);
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur location:", error.message);
+    
+    let errorMessage = "Erreur réseau";
+    if (error.response?.data?.message) {
+      errorMessage = error.response.data.message;
+    } else if (error.code === 'ECONNREFUSED') {
+      errorMessage = "Serveur inaccessible";
+    }
+    
+    return {
+      success: false,
+      message: errorMessage
+    };
+  }
+};
+
+/**
+ * Terminer une location
+ */
+export const endRental = async (rentalId, userId = null) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🔚 Fin location: ${rentalId}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/end-rental", { 
+      rentalId,
+      userId 
+    });
+    
+    console.log(`[API] ✅ Fin location: ${response.data.success ? 'Succès' : 'Échec'}`);
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur fin location:", error.message);
+    
+    return {
+      success: false,
+      message: error.response?.data?.message || "Erreur fin location"
+    };
+  }
+};
+
+/**
+ * Login utilisateur
+ */
+export const loginUser = async (email, password) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 🔐 Login vers ${currentUrl}: ${email}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/login", {
+      email: email.toLowerCase().trim(),
+      password: password
+    });
+    
+    console.log(`[API] ✅ Login: ${response.data.success ? 'Succès' : 'Échec'}`);
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur login:", error.message);
+    
+    let errorMessage = "Erreur réseau";
+    if (error.response?.data?.message) {
+      errorMessage = error.response.data.message;
+    } else if (error.code === 'ECONNREFUSED') {
+      errorMessage = "Serveur inaccessible";
+    }
+    
+    return {
+      success: false,
+      message: errorMessage
+    };
+  }
+};
+
+/**
+ * Inscription utilisateur
+ */
+export const registerUser = async (userData) => {
+  try {
+    const currentUrl = await getDynamicApiUrl();
+    console.log(`[API] 📝 Register vers ${currentUrl}: ${userData.email}`);
+    
+    const api = axios.create({ 
+      baseURL: currentUrl,
+      timeout: 15000 
+    });
+    
+    const response = await api.post("/api/register", userData);
+    
+    return response.data;
+    
+  } catch (error) {
+    console.error("[API] ❌ Erreur register:", error.message);
+    return {
+      success: false,
+      message: error.response?.data?.message || "Erreur réseau"
+    };
+  }
+};
+
+/**
+ * Réinitialise la détection d'API
+ */
+export const resetApiDetection = () => {
+  API_URL = null;
+  resetDetection();
+  console.log("[API] 🔄 Détection réinitialisée");
+};
+
+export default {
+  getStations,
+  getMyRentals,
+  rentBike,
+  endRental,
+  loginUser,
+  registerUser,
+  testConnection,
+  resetApiDetection
+};
+
+---------------------------------------------------
+server.js // server.js - API Wheelsun Backend COMPLÈTE avec locations
+const express = require("express");
+const mysql = require("mysql2");
+const cors = require("cors");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const os = require("os");
+require("dotenv").config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ==================== FONCTION POUR OBTENIR L'IP ====================
+function getNetworkIP() {
+  console.log("🔍 Recherche de l'adresse IP réseau...");
+  
+  const interfaces = os.networkInterfaces();
+  let wifiIP = null;
+  let ethernetIP = null;
+  let otherIP = null;
+
+  for (const interfaceName in interfaces) {
+    for (const iface of interfaces[interfaceName]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        console.log(`   📡 ${interfaceName}: ${iface.address}`);
+        
+        if (interfaceName.includes('Wi-Fi') || interfaceName.includes('WiFi') || interfaceName.includes('WLAN')) {
+          wifiIP = iface.address;
+        }
+        else if (interfaceName.includes('Ethernet') && iface.address.startsWith('20.')) {
+          ethernetIP = iface.address;
+        }
+        else if (!iface.address.startsWith('169.254')) {
+          otherIP = iface.address;
+        }
+      }
+    }
+  }
+
+  if (wifiIP) {
+    console.log(`✅ IP WiFi sélectionnée: ${wifiIP}`);
+    return wifiIP;
+  }
+  if (ethernetIP) {
+    console.log(`✅ IP Ethernet sélectionnée: ${ethernetIP}`);
+    return ethernetIP;
+  }
+  if (otherIP) {
+    console.log(`✅ Autre IP sélectionnée: ${otherIP}`);
+    return otherIP;
+  }
+
+  console.log("📍 Utilisation de localhost");
+  return 'localhost';
+}
+
+const SERVER_IP = getNetworkIP();
+
+// ==================== CONFIGURATION MYSQL ====================
+console.log("\n🔧 Configuration MySQL:");
+console.log("- Host:", process.env.DB_HOST || "localhost");
+console.log("- User:", process.env.DB_USER || "root");
+console.log("- Database:", process.env.DB_NAME || "wheelsun_db");
+console.log("- Port:", process.env.DB_PORT || 3306);
+
+const dbConfig = {
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME || "wheelsun_db",
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+};
+
+const db = mysql.createPool(dbConfig);
+
+// ==================== CRÉATION DES TABLES SI ELLES N'EXISTENT PAS ====================
+const createTables = () => {
+  const tablesQueries = [
+    // Table rentals pour gérer les locations
+    `CREATE TABLE IF NOT EXISTS rentals (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT NOT NULL,
+      bike_id INT NOT NULL,
+      station_id INT NOT NULL,
+      hours INT NOT NULL,
+      total_price DECIMAL(10,2) NOT NULL,
+      status ENUM('active', 'completed', 'cancelled') DEFAULT 'active',
+      start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      end_time TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (bike_id) REFERENCES bikes(id) ON DELETE CASCADE,
+      FOREIGN KEY (station_id) REFERENCES stations(id) ON DELETE CASCADE
+    )`,
+    
+    // S'assurer que la table users existe
+    `CREATE TABLE IF NOT EXISTS users (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      email VARCHAR(100) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      phone VARCHAR(20),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`,
+    
+    // S'assurer que la table stations existe
+    `CREATE TABLE IF NOT EXISTS stations (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(50) NOT NULL,
+      latitude DECIMAL(10,8) NOT NULL,
+      longitude DECIMAL(11,8) NOT NULL,
+      address VARCHAR(255) DEFAULT NULL,
+      capacity INT DEFAULT 10,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    
+    // S'assurer que la table bikes existe
+    `CREATE TABLE IF NOT EXISTS bikes (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      station_id INT NOT NULL,
+      name VARCHAR(50) NOT NULL,
+      battery_level INT DEFAULT 100,
+      price_per_hour DECIMAL(5,2) DEFAULT 6.00,
+      available BOOLEAN DEFAULT true,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (station_id) REFERENCES stations(id) ON DELETE CASCADE
+    )`
+  ];
+
+  tablesQueries.forEach((query, index) => {
+    db.query(query, (err) => {
+      if (err) {
+        console.error(`❌ Erreur création table ${index + 1}:`, err.message);
+      } else {
+        console.log(`✅ Table ${index + 1} vérifiée/créée`);
+      }
+    });
+  });
+};
+
+// ==================== TEST CONNEXION MYSQL ====================
+let isDbConnected = false;
+
+db.getConnection((err, connection) => {
+  if (err) {
+    console.error("❌ ERREUR MYSQL:", err.message);
+    console.log("⚠️  Mode simulation activé");
+    isDbConnected = false;
+  } else {
+    console.log("✅ MySQL CONNECTÉ !");
+    
+    // Créer les tables si elles n'existent pas
+    createTables();
+    
+    connection.query("SELECT DATABASE() as db", (err, result) => {
+      if (!err && result[0]) {
+        console.log("📊 Base de données:", result[0].db);
+      }
+    });
+    
+    isDbConnected = true;
+    connection.release();
+  }
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || "wheelsun_secret_key";
+
+// ==================== MIDDLEWARE AUTH ====================
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Token manquant" });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: "Token invalide" });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ==================== ROUTES API ====================
+
+// 1. RACINE - TEST API
+app.get("/", (req, res) => {
+  res.json({
+    message: "🚀 API Wheelsun Backend",
+    status: "online",
+    version: "2.1.0",
+    server_ip: SERVER_IP,
+    database: isDbConnected ? "✅ MySQL connecté" : "⚠️ Mode simulation",
+    features: ["stations", "bikes", "auth", "rentals"],
+    endpoints: {
+      auth: ["POST /api/register", "POST /api/login"],
+      stations: "GET /api/stations",
+      bikes: "GET /api/bikes/:stationId",
+      rentals: ["POST /api/rent", "POST /api/end-rental", "GET /api/my-rentals/:userId"],
+      profile: "GET /api/profile"
+    }
+  });
+});
+
+// 2. STATIONS
+app.get("/api/stations", (req, res) => {
+  console.log("🔍 /api/stations appelé");
+  
+  if (isDbConnected) {
+    db.query(
+      "SELECT id, name, latitude, longitude, address, capacity FROM stations ORDER BY name",
+      (err, results) => {
+        if (err) {
+          console.error("❌ Erreur stations:", err);
+          return sendFallbackStations(res);
+        }
+        
+        console.log(`📍 ${results.length} stations depuis MySQL`);
+        res.json(results);
+      }
+    );
+  } else {
+    console.log("⚠️  Mode simulation stations");
+    sendFallbackStations(res);
+  }
+});
+
+// 3. VÉLOS PAR STATION (EXCLUT LES VÉLOS LOUÉS)
+app.get("/api/bikes/:stationId", (req, res) => {
+  const stationId = parseInt(req.params.stationId);
+  console.log(`🔍 /api/bikes/${stationId} appelé`);
+  
+  if (isDbConnected) {
+    db.query(
+      `SELECT b.id, b.name, b.battery_level as battery, b.price_per_hour as price, 
+              b.available, s.name as station_name
+       FROM bikes b
+       JOIN stations s ON b.station_id = s.id
+       WHERE b.station_id = ? 
+       AND b.available = 1 
+       AND b.id NOT IN (
+         SELECT bike_id FROM rentals 
+         WHERE status = 'active' 
+         AND bike_id IS NOT NULL
+       )
+       ORDER BY b.name`,
+      [stationId],
+      (err, results) => {
+        if (err) {
+          console.error(`❌ Erreur bikes:`, err.message);
+          return sendFallbackBikes(stationId, res);
+        }
+        
+        console.log(`🚲 ${results.length} vélos DISPONIBLES pour station ${stationId}`);
+        res.json(results);
+      }
+    );
+  } else {
+    sendFallbackBikes(stationId, res);
+  }
+});
+
+// 4. VÉLOS LOUÉS PAR UTILISATEUR
+app.get("/api/my-rentals/:userId", (req, res) => {
+  const userId = parseInt(req.params.userId);
+  console.log(`👤 Locations actives pour user ${userId}`);
+  
+  if (isDbConnected) {
+    db.query(
+      `SELECT r.id as rental_id, b.id as bike_id, b.name as bike_name, 
+              b.battery_level as battery, s.name as station_name, 
+              s.latitude, s.longitude, r.start_time, r.hours, r.total_price
+       FROM rentals r
+       JOIN bikes b ON r.bike_id = b.id
+       JOIN stations s ON r.station_id = s.id
+       WHERE r.user_id = ? AND r.status = 'active'
+       ORDER BY r.start_time DESC`,
+      [userId],
+      (err, results) => {
+        if (err) {
+          console.error("❌ Erreur locations actives:", err.message);
+          return res.json([]);
+        }
+        
+        console.log(`📱 User ${userId} a ${results.length} location(s) active(s)`);
+        res.json(results);
+      }
+    );
+  } else {
+    res.json([]);
+  }
+});
+
+// 5. LOUER UN VÉLO
+app.post("/api/rent", (req, res) => {
+  console.log("🚲 Demande de location:", req.body);
+  
+  const { userId, bikeId, stationId, hours } = req.body;
+  
+  if (!userId || !bikeId || !stationId || !hours) {
+    return res.status(400).json({
+      success: false,
+      message: "Données manquantes: userId, bikeId, stationId, hours requis"
+    });
+  }
+  
+  if (hours <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Nombre d'heures invalide"
+    });
+  }
+  
+  if (isDbConnected) {
+    // Commencer une transaction
+    db.getConnection((err, connection) => {
+      if (err) {
+        console.error("❌ Erreur connexion:", err);
+        return res.status(500).json({
+          success: false,
+          message: "Erreur base de données"
+        });
+      }
+      
+      connection.beginTransaction(async (err) => {
+        if (err) {
+          connection.release();
+          console.error("❌ Erreur transaction:", err);
+          return res.status(500).json({
+            success: false,
+            message: "Erreur transaction"
+          });
+        }
+        
+        try {
+          // 1. Vérifier si l'utilisateur a déjà un vélo loué
+          connection.query(
+            `SELECT id FROM rentals WHERE user_id = ? AND status = 'active'`,
+            [userId],
+            (err, activeRentals) => {
+              if (err) {
+                return rollbackAndRelease(connection, "Erreur vérification locations actives");
+              }
+              
+              if (activeRentals.length > 0) {
+                return rollbackAndRelease(connection, "Vous avez déjà un vélo loué");
+              }
+              
+              // 2. Vérifier si le vélo est disponible
+              connection.query(
+                `SELECT available, price_per_hour FROM bikes WHERE id = ?`,
+                [bikeId],
+                (err, bikeResults) => {
+                  if (err || bikeResults.length === 0) {
+                    return rollbackAndRelease(connection, "Vélo non trouvé");
+                  }
+                  
+                  const bike = bikeResults[0];
+                  if (!bike.available) {
+                    return rollbackAndRelease(connection, "Vélo non disponible");
+                  }
+                  
+                  // 3. Calculer le prix total
+                  const pricePerHour = parseFloat(bike.price_per_hour) || 6.00;
+                  const totalPrice = pricePerHour * hours;
+                  
+                  // 4. Créer la location
+                  connection.query(
+                    `INSERT INTO rentals (user_id, bike_id, station_id, hours, total_price, status)
+                     VALUES (?, ?, ?, ?, ?, 'active')`,
+                    [userId, bikeId, stationId, hours, totalPrice],
+                    (err, result) => {
+                      if (err) {
+                        return rollbackAndRelease(connection, "Erreur création location");
+                      }
+                      
+                      const rentalId = result.insertId;
+                      
+                      // 5. Marquer le vélo comme non disponible
+                      connection.query(
+                        "UPDATE bikes SET available = 0 WHERE id = ?",
+                        [bikeId],
+                        (err) => {
+                          if (err) {
+                            return rollbackAndRelease(connection, "Erreur mise à jour vélo");
+                          }
+                          
+                          // Tout est bon, commit
+                          connection.commit((err) => {
+                            if (err) {
+                              return rollbackAndRelease(connection, "Erreur commit");
+                            }
+                            
+                            console.log(`✅ Location ${rentalId} créée pour user ${userId}`);
+                            
+                            connection.query(
+                              `SELECT r.id as rental_id, b.id as bike_id, b.name as bike_name, 
+                                      b.battery_level as battery, s.name as station_name,
+                                      s.latitude, s.longitude, r.start_time, r.hours, r.total_price
+                               FROM rentals r
+                               JOIN bikes b ON r.bike_id = b.id
+                               JOIN stations s ON r.station_id = s.id
+                               WHERE r.id = ?`,
+                              [rentalId],
+                              (err, rentalDetails) => {
+                                connection.release();
+                                
+                                if (err || rentalDetails.length === 0) {
+                                  return res.json({
+                                    success: true,
+                                    message: "Location créée mais erreur récupération détails",
+                                    rentalId: rentalId
+                                  });
+                                }
+                                
+                                res.json({
+                                  success: true,
+                                  message: "Location confirmée",
+                                  rental: rentalDetails[0]
+                                });
+                              }
+                            );
+                          });
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
+          
+        } catch (error) {
+          rollbackAndRelease(connection, error.message);
+        }
+      });
+    });
+    
+  } else {
+    // Mode simulation
+    const simulatedRental = {
+      rental_id: Date.now(),
+      bike_id: bikeId,
+      bike_name: `Vélo ${bikeId}`,
+      battery: 85,
+      station_name: "Station simulée",
+      latitude: 33.5731,
+      longitude: -7.5898,
+      start_time: new Date().toISOString(),
+      hours: hours,
+      total_price: hours * 6.00
+    };
+    
+    res.json({
+      success: true,
+      message: "Location simulée (mode démo)",
+      rental: simulatedRental
+    });
+  }
+});
+
+// 6. TERMINER UNE LOCATION
+app.post("/api/end-rental", (req, res) => {
+  console.log("🔚 Fin de location:", req.body);
+  
+  const { rentalId, userId } = req.body;
+  
+  if (!rentalId) {
+    return res.status(400).json({
+      success: false,
+      message: "rentalId requis"
+    });
+  }
+  
+  if (isDbConnected) {
+    db.getConnection((err, connection) => {
+      if (err) {
+        console.error("❌ Erreur connexion:", err);
+        return res.status(500).json({
+          success: false,
+          message: "Erreur base de données"
+        });
+      }
+      
+      connection.beginTransaction((err) => {
+        if (err) {
+          connection.release();
+          console.error("❌ Erreur transaction:", err);
+          return res.status(500).json({
+            success: false,
+            message: "Erreur transaction"
+          });
+        }
+        
+        // 1. Récupérer le bike_id de la location
+        connection.query(
+          `SELECT bike_id, user_id FROM rentals WHERE id = ? AND status = 'active'`,
+          [rentalId],
+          (err, results) => {
+            if (err || results.length === 0) {
+              return rollbackAndRelease(connection, "Location non trouvée ou déjà terminée");
+            }
+            
+            const rental = results[0];
+            
+            // Vérifier que l'utilisateur est bien le propriétaire (optionnel)
+            if (userId && rental.user_id !== userId) {
+              return rollbackAndRelease(connection, "Non autorisé");
+            }
+            
+            const bikeId = rental.bike_id;
+            
+            // 2. Terminer la location
+            connection.query(
+              `UPDATE rentals SET status = 'completed', end_time = NOW() WHERE id = ?`,
+              [rentalId],
+              (err) => {
+                if (err) {
+                  return rollbackAndRelease(connection, "Erreur fin location");
+                }
+                
+                // 3. Rendre le vélo disponible
+                connection.query(
+                  "UPDATE bikes SET available = 1 WHERE id = ?",
+                  [bikeId],
+                  (err) => {
+                    if (err) {
+                      return rollbackAndRelease(connection, "Erreur mise à jour vélo");
+                    }
+                    
+                    // Commit
+                    connection.commit((err) => {
+                      if (err) {
+                        return rollbackAndRelease(connection, "Erreur commit");
+                      }
+                      
+                      console.log(`✅ Location ${rentalId} terminée, vélo ${bikeId} disponible`);
+                      connection.release();
+                      
+                      res.json({
+                        success: true,
+                        message: "Location terminée avec succès"
+                      });
+                    });
+                  }
+                );
+              }
+            );
+          }
+        );
+      });
+    });
+    
+  } else {
+    res.json({
+      success: true,
+      message: "Location terminée (mode simulation)"
+    });
+  }
+});
+
+// 7. INSCRIPTION
+app.post("/api/register", async (req, res) => {
+  console.log("📝 Register reçu:", req.body);
+  
+  try {
+    const { email, password, name, phone } = req.body;
+
+    if (!email || !password || !name) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email, mot de passe et nom requis" 
+      });
+    }
+
+    if (!isDbConnected) {
+      const token = jwt.sign(
+        { userId: 999, email: email, name: name },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      
+      return res.json({
+        success: true,
+        message: "Mode simulation - Compte créé",
+        token,
+        user: { id: 999, email, name, phone: phone || null }
+      });
+    }
+
+    // Vérifier email
+    db.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email],
+      async (err, results) => {
+        if (err) {
+          console.error("❌ Erreur vérification email:", err);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Erreur base de données" 
+          });
+        }
+
+        if (results.length > 0) {
+          return res.status(409).json({ 
+            success: false, 
+            message: "Cet email est déjà utilisé" 
+          });
+        }
+
+        // Hasher mot de passe
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Créer utilisateur
+        db.query(
+          "INSERT INTO users (email, password, name, phone) VALUES (?, ?, ?, ?)",
+          [email, hashedPassword, name, phone || null],
+          (err, result) => {
+            if (err) {
+              console.error("❌ Erreur création:", err);
+              return res.status(500).json({ 
+                success: false, 
+                message: "Erreur création compte" 
+              });
+            }
+
+            // Générer token
+            const token = jwt.sign(
+              { userId: result.insertId, email: email, name: name },
+              JWT_SECRET,
+              { expiresIn: "7d" }
+            );
+
+            res.json({
+              success: true,
+              message: "Compte créé avec succès",
+              token,
+              user: {
+                id: result.insertId,
+                email,
+                name,
+                phone: phone || null
+              }
+            });
+          }
+        );
+      }
+    );
+  } catch (error) {
+    console.error("❌ Erreur inscription:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Erreur serveur" 
+    });
+  }
+});
+
+// 8. CONNEXION
+app.post("/api/login", async (req, res) => {
+  console.log("🔐 Login reçu:", req.body.email);
+  
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email et mot de passe requis" 
+      });
+    }
+
+    if (!isDbConnected) {
+      const token = jwt.sign(
+        { userId: 999, email: email, name: "Utilisateur Test" },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      
+      return res.json({
+        success: true,
+        message: "Mode simulation - Connecté",
+        token,
+        user: { id: 999, email, name: "Utilisateur Test" }
+      });
+    }
+
+    db.query(
+      "SELECT id, email, password, name, phone FROM users WHERE email = ?",
+      [email],
+      async (err, results) => {
+        if (err) {
+          console.error("❌ Erreur login:", err);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Erreur base de données" 
+          });
+        }
+
+        if (results.length === 0) {
+          return res.status(401).json({ 
+            success: false, 
+            message: "Email ou mot de passe incorrect" 
+          });
+        }
+
+        const user = results[0];
+        const validPassword = await bcrypt.compare(password, user.password);
+
+        if (!validPassword) {
+          return res.status(401).json({ 
+            success: false, 
+            message: "Email ou mot de passe incorrect" 
+          });
+        }
+
+        const token = jwt.sign(
+          { userId: user.id, email: user.email, name: user.name },
+          JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        res.json({
+          success: true,
+          message: "Connexion réussie",
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            phone: user.phone || null
+          }
+        });
+      }
+    );
+  } catch (error) {
+    console.error("❌ Erreur login:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Erreur serveur" 
+    });
+  }
+});
+
+// 9. PROFIL UTILISATEUR
+app.get("/api/profile", authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
+  if (!isDbConnected) {
+    return res.json({
+      id: userId,
+      email: req.user.email,
+      name: req.user.name || "Utilisateur",
+      phone: "+212 6 XX XX XX XX"
+    });
+  }
+
+  db.query(
+    "SELECT id, email, name, phone FROM users WHERE id = ?",
+    [userId],
+    (err, results) => {
+      if (err || results.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          message: "Utilisateur non trouvé" 
+        });
+      }
+      res.json(results[0]);
+    }
+  );
+});
+
+// ==================== FONCTIONS UTILITAIRES ====================
+function rollbackAndRelease(connection, message) {
+  connection.rollback(() => {
+    connection.release();
+    console.error("❌ Transaction annulée:", message);
+  });
+}
+
+function sendFallbackStations(res) {
+  const stations = [
+    {
+      id: 1,
+      name: "ST-WS100",
+      latitude: 33.5731,
+      longitude: -7.5898,
+      address: "Centre-ville Casablanca",
+      capacity: 20
+    },
+    {
+      id: 2,
+      name: "ST-WS200",
+      latitude: 33.5790,
+      longitude: -7.5990,
+      address: "Quartier des affaires",
+      capacity: 15
+    },
+    {
+      id: 3,
+      name: "ST-WS300",
+      latitude: 33.5670,
+      longitude: -7.5800,
+      address: "Port de Casablanca",
+      capacity: 25
+    },
+    {
+      id: 4,
+      name: "ST-WS400",
+      latitude: 33.5830,
+      longitude: -7.5750,
+      address: "Nord Casablanca",
+      capacity: 18
+    },
+    {
+      id: 5,
+      name: "ST-WS500",
+      latitude: 33.581571,
+      longitude: -7.602317,
+      address: "Nouvelle zone Casablanca",
+      capacity: 12
+    },
+    {
+      id: 6,
+      name: "ST-WS600",
+      latitude: 33.601790,
+      longitude: -7.584101,
+      address: "Quartier résidentiel Nord",
+      capacity: 10
+    }
+  ];
+  
+  res.json(stations);
+}
+
+function sendFallbackBikes(stationId, res) {
+  const bikesDatabase = {
+    1: [
+      { id: 101, name: "V100-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS100" },
+      { id: 102, name: "V100-02", battery: 90, price: 6.00, available: true, station_name: "ST-WS100" },
+      { id: 103, name: "V100-03", battery: 80, price: 6.00, available: true, station_name: "ST-WS100" },
+      { id: 104, name: "V100-04", battery: 75, price: 6.00, available: true, station_name: "ST-WS100" }
+    ],
+    2: [
+      { id: 201, name: "V200-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS200" },
+      { id: 202, name: "V200-02", battery: 50, price: 6.00, available: true, station_name: "ST-WS200" },
+      { id: 203, name: "V200-03", battery: 45, price: 6.00, available: false, station_name: "ST-WS200" }
+    ],
+    3: [
+      { id: 301, name: "V300-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS300" },
+      { id: 302, name: "V300-02", battery: 95, price: 6.00, available: true, station_name: "ST-WS300" },
+      { id: 303, name: "V300-03", battery: 80, price: 6.00, available: true, station_name: "ST-WS300" },
+      { id: 304, name: "V300-04", battery: 70, price: 6.00, available: true, station_name: "ST-WS300" },
+      { id: 305, name: "V300-05", battery: 50, price: 5.50, available: true, station_name: "ST-WS300" }
+    ],
+    4: [
+      { id: 401, name: "V400-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS400" },
+      { id: 402, name: "V400-02", battery: 90, price: 6.00, available: true, station_name: "ST-WS400" },
+      { id: 403, name: "V400-03", battery: 30, price: 5.00, available: true, station_name: "ST-WS400" }
+    ],
+    5: [
+      { id: 501, name: "V500-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS500" },
+      { id: 502, name: "V500-02", battery: 65, price: 6.00, available: false, station_name: "ST-WS500" }
+    ],
+    6: [
+      { id: 601, name: "V600-01", battery: 100, price: 6.00, available: true, station_name: "ST-WS600" },
+      { id: 602, name: "V600-02", battery: 85, price: 6.00, available: true, station_name: "ST-WS600" },
+      { id: 603, name: "V600-03", battery: 95, price: 6.00, available: true, station_name: "ST-WS600" }
+    ]
+  };
+  
+  res.json(bikesDatabase[stationId] || []);
+}
+
+// ==================== DÉMARRAGE SERVEUR ====================
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 Serveur backend démarré`);
+  console.log(`📍 Local: http://localhost:${PORT}`);
+  console.log(`🌐 Réseau: http://${SERVER_IP}:${PORT}`);
+  console.log(`📱 Pour Expo Go: http://${SERVER_IP}:${PORT}`);
+  console.log(`📊 MySQL: ${isDbConnected ? '✅ Connecté' : '❌ Non connecté'}`);
+  
+  console.log(`\n📡 Endpoints disponibles:`);
+  console.log(`   http://${SERVER_IP}:${PORT}/`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/register`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/login`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/stations`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/bikes/1`);
+  console.log(`   http://${SERVER_IP}:${PORT}/api/my-rentals/1`);
+  console.log(`\n💡 Nouveau: Système de locations complet !`);
+});

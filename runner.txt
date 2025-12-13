@@ -1,0 +1,4 @@
+c..
+npm run dev
+expo start --clear  
+if MySQL doesn't run watch the video :https://www.youtube.com/watch?v=84IOtc05TuA
